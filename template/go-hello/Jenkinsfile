@@ -1,21 +1,102 @@
 pipeline {
     agent any
+
+    environment {
+        APP_NAME = "go-hello"
+        DEPLOY_DIR = "/opt/${APP_NAME}"
+        PORT = "${params.DEPLOY_PORT}"
+    }
+
+    parameters {
+        string(name: "DEPLOY_PORT", defaultValue: "9090", description: "应用监听端口")
+        string(name: "GIT_BRANCH", defaultValue: "main", description: "Git分支")
+    }
+
     stages {
-        stage('Checkout') {
-            steps { checkout scm }
+        stage("Checkout") {
+            steps {
+                checkout([
+                    $class: "GitSCM",
+                    branches: [[name: "*/${GIT_BRANCH}"]],
+                    userRemoteConfigs: [[
+                        url: "https://github.com/qinming-23/cicd.git"
+                    ]],
+                    extensions: [[
+                        $class: "SparseCheckoutPaths",
+                        sparseCheckoutPaths: [[path: "template/go-hello"]]
+                    ], [
+                        $class: "RelativeTargetDirectory",
+                        relativeTargetDir: APP_NAME
+                    ]]
+                ])
+            }
         }
-        stage('Build') {
-            steps { sh 'go build -o hello .' }
+        stage("Build") {
+            steps {
+                dir(APP_NAME + "/template/go-hello") {
+                    sh "go version"
+                    sh "go build -o ${APP_NAME} ."
+                }
+            }
         }
-        stage('Test') {
-            steps { sh 'go test ./... -v || echo \"No tests found\"' }
+        stage("Test") {
+            steps {
+                dir(APP_NAME + "/template/go-hello") {
+                    sh "go test ./... -v || echo No tests found"
+                }
+            }
         }
-        stage('Package') {
-            steps { sh 'docker build -t hello-world:latest .' }
+        stage("Deploy") {
+            steps {
+                dir(APP_NAME + "/template/go-hello") {
+                    sh """
+                        # Stop service
+                        systemctl stop ${APP_NAME} || true
+
+                        # Copy binary
+                        mkdir -p ${DEPLOY_DIR}
+                        cp ${APP_NAME} ${DEPLOY_DIR}/
+                        chmod +x ${DEPLOY_DIR}/${APP_NAME}
+
+                        # Create systemd service if not exists
+                        if [ ! -f /etc/systemd/system/${APP_NAME}.service ]; then
+                            cat > /etc/systemd/system/${APP_NAME}.service << EOF2
+[Unit]
+Description=Go Hello World Demo
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${DEPLOY_DIR}
+ExecStart=${DEPLOY_DIR}/${APP_NAME}
+Environment=PORT=${PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF2
+                            systemctl daemon-reload
+                            systemctl enable ${APP_NAME}
+                        fi
+
+                        # Start service
+                        systemctl daemon-reload
+                        systemctl start ${APP_NAME}
+                        systemctl status ${APP_NAME} --no-pager | head -10
+                    """
+                }
+            }
         }
     }
+
     post {
-        success { echo 'Pipeline completed!' }
-        failure { echo 'Pipeline failed!' }
+        success {
+            echo "✅ Pipeline completed! App running at http://$(hostname -I | awk "{print \$1}"):${PORT}"
+        }
+        failure {
+            echo "❌ Pipeline failed!"
+        }
     }
 }
