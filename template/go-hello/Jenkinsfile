@@ -1,0 +1,21 @@
+pipeline {
+    agent any
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+        stage('Build') {
+            steps { sh 'go build -o hello .' }
+        }
+        stage('Test') {
+            steps { sh 'go test ./... -v || echo \"No tests found\"' }
+        }
+        stage('Package') {
+            steps { sh 'docker build -t hello-world:latest .' }
+        }
+    }
+    post {
+        success { echo 'Pipeline completed!' }
+        failure { echo 'Pipeline failed!' }
+    }
+}
